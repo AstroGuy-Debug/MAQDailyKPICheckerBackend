@@ -104,6 +104,7 @@ router.post('/login', async (req, res) => {
                 email: user.email,
                 role: user.role,
                 isVerified: user.isVerified,
+                mustChangePassword: user.mustChangePassword || false,
                 token: generateToken(user._id),
             });
         }
@@ -239,6 +240,42 @@ router.post('/verify-code', async (req, res) => {
     } else {
         res.status(404).json({ message: 'User not found' });
     }
+});
+
+// @desc    Change password (for OM first-login or any user)
+// @route   PUT /api/auth/change-password
+// @access  Private
+router.put('/change-password', protect, async (req, res) => {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!newPassword || newPassword.length < 6) {
+        return res.status(400).json({ message: 'New password must be at least 6 characters' });
+    }
+
+    const user = await User.findById(req.user._id);
+
+    if (!user) {
+        return res.status(404).json({ message: 'User not found' });
+    }
+
+    const isMatch = await bcrypt.compare(currentPassword, user.password);
+    if (!isMatch) {
+        return res.status(400).json({ message: 'Current password is incorrect' });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    user.password = await bcrypt.hash(newPassword, salt);
+    user.mustChangePassword = false;
+    await user.save();
+
+    res.json({
+        _id: user._id,
+        email: user.email,
+        role: user.role,
+        isVerified: user.isVerified,
+        mustChangePassword: false,
+        token: generateToken(user._id),
+    });
 });
 
 export default router;
