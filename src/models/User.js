@@ -12,7 +12,7 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['OM', 'POC'],
+    enum: ['OM', 'POC', 'POC-SCHOOL'],
     default: 'POC',
   },
   isVerified: {

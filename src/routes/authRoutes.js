@@ -108,6 +108,15 @@ router.post('/login', async (req, res) => {
             });
         }
 
+        // Block unverified POCs — they must complete account verification first
+        if (!user.isVerified) {
+            return res.status(403).json({
+                message: 'Account not yet verified. Please ask your OM for the verification code.',
+                needsVerification: true,
+                email: user.email,
+            });
+        }
+
         // POC users - generate a login verification code
         const loginCode = Math.floor(100000 + Math.random() * 900000).toString();
         user.loginCode = loginCode;
@@ -144,7 +153,7 @@ router.post('/verify-login', async (req, res) => {
         return res.status(400).json({ message: 'No pending login code. Please log in again.' });
     }
 
-    if (user.loginCode === code) {
+    if (user.loginCode === code.trim()) {
         user.loginCodeUsed = true;
         await user.save();
 
@@ -212,7 +221,7 @@ router.post('/verify-code', async (req, res) => {
             return res.status(400).json({ message: 'User is already verified' });
         }
 
-        if (user.verificationCode === code) {
+        if (user.verificationCode === code.trim()) {
             user.isVerified = true;
             user.verificationCode = null;
             const updatedUser = await user.save();
