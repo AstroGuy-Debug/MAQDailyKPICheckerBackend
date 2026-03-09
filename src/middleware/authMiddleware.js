@@ -31,3 +31,27 @@ export const omOnly = (req, res, next) => {
         res.status(403).json({ message: 'Not authorized as an OM' });
     }
 };
+
+export const tlOnly = (req, res, next) => {
+    if (req.user && req.user.role === 'TL') {
+        next();
+    } else {
+        res.status(403).json({ message: 'Not authorized as a TL' });
+    }
+};
+
+export const tlSchoolOnly = (req, res, next) => {
+    if (req.user && req.user.role === 'TL-SCHOOL') {
+        next();
+    } else {
+        res.status(403).json({ message: 'Not authorized as a School TL' });
+    }
+};
+
+export const tlOrOm = (req, res, next) => {
+    if (req.user && (req.user.role === 'TL' || req.user.role === 'TL-SCHOOL' || req.user.role === 'OM')) {
+        next();
+    } else {
+        res.status(403).json({ message: 'Not authorized' });
+    }
+};

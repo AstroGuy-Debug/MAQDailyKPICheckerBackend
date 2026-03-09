@@ -17,7 +17,7 @@ const schoolReportSchema = new mongoose.Schema({
     verifiedThru: { type: String },
     status: {
         type: String,
-        enum: ['policy', 'result', 'closed thru internal', 'pending'],
+        enum: ['policy', 'result', 'closed thru internal', 'pending', 'clear'],
         default: 'pending'
     },
     uploader: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

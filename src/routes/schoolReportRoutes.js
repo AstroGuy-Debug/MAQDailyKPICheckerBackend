@@ -1,5 +1,6 @@
 import express from 'express';
 import SchoolReport from '../models/SchoolReport.js';
+import SchoolKpiLog from '../models/SchoolKpiLog.js';
 import { protect, omOnly } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
@@ -15,16 +16,97 @@ router.post('/batch', protect, async (req, res) => {
             return res.status(400).json({ message: 'Invalid reports format' });
         }
 
-        // Attach user object ID to each report
-        const reportsWithUser = reports.map(r => ({
-            ...r,
-            uploader: req.user._id,
-        }));
+        const uploaderId = req.user._id;
+        const dateToday = new Date();
+        dateToday.setHours(0, 0, 0, 0);
 
-        // Insert into database
-        const inserted = await SchoolReport.insertMany(reportsWithUser);
+        let newRecordsCount = 0;
+        let updatedRecordsCount = 0;
 
-        res.status(201).json({ message: 'Batch upload successful', count: inserted.length });
+        for (const r of reports) {
+            // Find existing record by First, Last, and Middle Name
+            const query = {
+                firstName: r.firstName,
+                lastName: r.lastName
+            };
+
+            if (r.middleName) {
+                query.middleName = r.middleName;
+            } else {
+                query.middleName = { $in: [null, '', undefined] };
+            }
+
+            const existing = await SchoolReport.findOne(query);
+
+            if (existing) {
+                // Check if there are meaningful differences
+                let hasChanges = false;
+                const fieldsToCheck = [
+                    'account', 'endorsementDate', 'schoolName', 'schoolAddress',
+                    'degree', 'attainment', 'dateOfGraduation', 'remarks',
+                    'sourceContact', 'resultDate', 'verifiedThru', 'status'
+                ];
+
+                for (const field of fieldsToCheck) {
+                    if (r[field] !== undefined) {
+                        const existingVal = existing[field] ? existing[field].toString() : '';
+                        const newVal = r[field] ? r[field].toString() : '';
+
+                        if (existingVal !== newVal) {
+                            if (existing[field] instanceof Date || r[field] instanceof Date) {
+                                const eDate = new Date(existing[field]).getTime();
+                                const nDate = new Date(r[field]).getTime();
+                                if (!isNaN(eDate) && !isNaN(nDate) && eDate !== nDate) {
+                                    hasChanges = true;
+                                    existing[field] = r[field];
+                                } else if (isNaN(eDate) !== isNaN(nDate)) {
+                                    hasChanges = true;
+                                    existing[field] = r[field];
+                                }
+                            } else {
+                                hasChanges = true;
+                                existing[field] = r[field];
+                            }
+                        }
+                    }
+                }
+
+                if (hasChanges) {
+                    existing.uploader = uploaderId;
+                    await existing.save();
+                    updatedRecordsCount++;
+
+                    // Log KPI update (upsert so we only log once a day per record)
+                    await SchoolKpiLog.findOneAndUpdate(
+                        { poc: uploaderId, date: dateToday, reportId: existing._id },
+                        { $setOnInsert: { action: 'updated' } },
+                        { upsert: true }
+                    );
+                }
+            } else {
+                // Insert new record
+                const newReport = new SchoolReport({
+                    ...r,
+                    uploader: uploaderId
+                });
+                await newReport.save();
+                newRecordsCount++;
+
+                // Log KPI creation
+                await SchoolKpiLog.findOneAndUpdate(
+                    { poc: uploaderId, date: dateToday, reportId: newReport._id },
+                    { $setOnInsert: { action: 'created' } },
+                    { upsert: true }
+                );
+            }
+        }
+
+        res.status(201).json({
+            message: 'Batch upload successful',
+            count: newRecordsCount + updatedRecordsCount,
+            newRecords: newRecordsCount,
+            updatedRecords: updatedRecordsCount
+        });
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Server upload error', error: error.message });
@@ -85,14 +167,24 @@ router.get('/kpi', protect, async (req, res) => {
         const uploaderId = req.user.role === 'POC-SCHOOL' ? req.user._id : undefined;
 
         let matchQuery = {
-            createdAt: { $gte: startOfDay, $lte: endOfDay }
+            date: { $gte: startOfDay, $lte: endOfDay }
         };
         if (uploaderId) {
-            matchQuery.uploader = uploaderId;
+            matchQuery.poc = uploaderId;
         }
 
-        // Get all reports for the day
-        const reports = await SchoolReport.find(matchQuery);
+        // Get all KPI logs for the day and populate the associated report and POC user
+        const kpiLogs = await SchoolKpiLog.find(matchQuery).populate('reportId').populate('poc', 'email role');
+
+        // Extract the unique reports from the logs
+        const reports = kpiLogs.map(log => log.reportId).filter(r => r != null);
+
+        // Calculate explicit endorsements for today (created today + endorsement date matches today)
+        const endorsementsToday = kpiLogs.filter(log => {
+            if (log.action !== 'created' || !log.reportId) return false;
+            const ed = new Date(log.reportId.endorsementDate);
+            return ed >= startOfDay && ed <= endOfDay;
+        }).length;
 
         // Calculate KPI
         const accountBreakdown = {};
@@ -115,18 +207,96 @@ router.get('/kpi', protect, async (req, res) => {
         const totalClosed = reports.filter(r => r.status === 'closed thru internal').length;
         const totalPending = reports.filter(r => r.status === 'pending').length;
 
+        // Breakdown by POC (for OM)
+        let pocBreakdown = undefined;
+        if (!uploaderId) { // If OM
+            pocBreakdown = {};
+            kpiLogs.forEach(log => {
+                if (!log.poc || log.poc.role !== 'POC-SCHOOL') return;
+                const pocEmail = log.poc.email;
+                if (!pocBreakdown[pocEmail]) {
+                    pocBreakdown[pocEmail] = { total: 0, policy: 0, result: 0, closed: 0, pending: 0 };
+                }
+                pocBreakdown[pocEmail].total++;
+                const r = log.reportId;
+                if (r) {
+                    if (r.status === 'policy') pocBreakdown[pocEmail].policy++;
+                    else if (r.status === 'result') pocBreakdown[pocEmail].result++;
+                    else if (r.status === 'closed thru internal') pocBreakdown[pocEmail].closed++;
+                    else pocBreakdown[pocEmail].pending++;
+                }
+            });
+        }
+
         res.json({
             date: startOfDay.toISOString().substring(0, 10),
+            endorsementsToday,
             totalProcessed,
             totalPolicy,
             totalResult,
             totalClosed,
             totalPending,
-            accountBreakdown
+            accountBreakdown,
+            pocBreakdown
         });
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Error fetching school KPI', error: error.message });
+    }
+});
+
+// @desc    Get POC-SCHOOL historical performance (last 7 days)
+// @route   GET /api/school-reports/history
+// @access  Private (POC-SCHOOL)
+router.get('/history', protect, async (req, res) => {
+    try {
+        const uploaderId = req.user._id;
+
+        // Date range calculation (last 7 days)
+        const endDate = new Date();
+        endDate.setHours(23, 59, 59, 999);
+        const startDate = new Date();
+        startDate.setDate(startDate.getDate() - 6);
+        startDate.setHours(0, 0, 0, 0);
+
+        const kpiLogs = await SchoolKpiLog.find({
+            poc: uploaderId,
+            date: { $gte: startDate, $lte: endDate }
+        }).populate('reportId');
+
+        // Group by Date DateString -> { date, total, completed, pending }
+        const historyMap = {};
+
+        // Initialize last 7 days to ensure empty days are shown
+        for (let i = 0; i < 7; i++) {
+            const d = new Date(endDate);
+            d.setDate(d.getDate() - i);
+            const dateStr = d.toISOString().substring(0, 10);
+            historyMap[dateStr] = { date: dateStr, total: 0, completed: 0, pending: 0 };
+        }
+
+        kpiLogs.forEach(log => {
+            const dateStr = new Date(log.date).toISOString().substring(0, 10);
+            if (!historyMap[dateStr]) return; // Safeguard
+
+            if (log.reportId) {
+                historyMap[dateStr].total++;
+                // In school reports, completed can be 'result', 'policy', 'closed thru internal'
+                if (['result', 'policy', 'closed thru internal'].includes(log.reportId.status)) {
+                    historyMap[dateStr].completed++;
+                } else {
+                    // Treating anything else, especially 'pending', as a pending touch
+                    historyMap[dateStr].pending++;
+                }
+            }
+        });
+
+        const historyArray = Object.values(historyMap).sort((a, b) => new Date(b.date) - new Date(a.date));
+
+        res.json(historyArray);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Error fetching School POC history', error: error.message });
     }
 });
 

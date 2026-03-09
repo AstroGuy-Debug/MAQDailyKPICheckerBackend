@@ -88,6 +88,82 @@ router.post('/register-school', async (req, res) => {
     }
 });
 
+// @desc    Register a new TL (Team Leader) User
+// @route   POST /api/auth/register-tl
+// @access  Public
+router.post('/register-tl', async (req, res) => {
+    const { email, password } = req.body;
+
+    const userExists = await User.findOne({ email });
+
+    if (userExists) {
+        return res.status(400).json({ message: 'User already exists' });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+
+    const user = await User.create({
+        email,
+        password: hashedPassword,
+        role: 'TL',
+        isVerified: false,
+        verificationCode
+    });
+
+    if (user) {
+        res.status(201).json({
+            _id: user._id,
+            email: user.email,
+            role: user.role,
+            isVerified: user.isVerified,
+            message: 'Registration successful. Waiting for OM verification.'
+        });
+    } else {
+        res.status(400).json({ message: 'Invalid user data' });
+    }
+});
+
+// @desc    Register a new TL-SCHOOL (School Team Leader) User
+// @route   POST /api/auth/register-tl-school
+// @access  Public
+router.post('/register-tl-school', async (req, res) => {
+    const { email, password } = req.body;
+
+    const userExists = await User.findOne({ email });
+
+    if (userExists) {
+        return res.status(400).json({ message: 'User already exists' });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+
+    const user = await User.create({
+        email,
+        password: hashedPassword,
+        role: 'TL-SCHOOL',
+        isVerified: false,
+        verificationCode
+    });
+
+    if (user) {
+        res.status(201).json({
+            _id: user._id,
+            email: user.email,
+            role: user.role,
+            isVerified: user.isVerified,
+            message: 'Registration successful. Waiting for OM verification.'
+        });
+    } else {
+        res.status(400).json({ message: 'Invalid user data' });
+    }
+});
+
 // @desc    Auth user & get token (POCs get a login code instead)
 // @route   POST /api/auth/login
 // @access  Public
@@ -174,7 +250,7 @@ router.post('/verify-login', async (req, res) => {
 // @route   GET /api/auth/users
 // @access  Private/OM
 router.get('/users', protect, omOnly, async (req, res) => {
-    const users = await User.find({ role: { $in: ['POC', 'POC-SCHOOL'] } }).select('-password');
+    const users = await User.find({ role: { $in: ['POC', 'POC-SCHOOL', 'TL', 'TL-SCHOOL'] } }).select('-password').populate('teamLeader', 'email');
     res.json(users);
 });
 
@@ -183,7 +259,7 @@ router.get('/users', protect, omOnly, async (req, res) => {
 // @access  Private/OM
 router.get('/login-codes', protect, omOnly, async (req, res) => {
     const users = await User.find({
-        role: { $in: ['POC', 'POC-SCHOOL'] },
+        role: { $in: ['POC', 'POC-SCHOOL', 'TL', 'TL-SCHOOL'] },
         loginCode: { $ne: null },
     }).select('email loginCode loginCodeCreatedAt loginCodeUsed').sort({ loginCodeCreatedAt: -1 });
     res.json(users);
@@ -207,6 +283,58 @@ router.put('/users/:id/verify', protect, omOnly, async (req, res) => {
     } else {
         res.status(404).json({ message: 'User not found' });
     }
+});
+
+// @desc    Assign a Team Leader to a user
+// @route   PUT /api/auth/users/:id/assign-tl
+// @access  Private/OM
+router.put('/users/:id/assign-tl', protect, omOnly, async (req, res) => {
+    const { teamLeaderId } = req.body;
+    const user = await User.findById(req.params.id);
+
+    if (!user) {
+        return res.status(404).json({ message: 'User not found' });
+    }
+
+    user.teamLeader = teamLeaderId || null;
+    const updatedUser = await user.save();
+    const populated = await User.findById(updatedUser._id).select('-password').populate('teamLeader', 'email');
+    res.json(populated);
+});
+
+// @desc    Get all TL users
+// @route   GET /api/auth/team-leaders
+// @access  Private/OM
+router.get('/team-leaders', protect, omOnly, async (req, res) => {
+    const tls = await User.find({ role: 'TL', isVerified: true }).select('_id email');
+    res.json(tls);
+});
+
+// @desc    Get all School TL users
+// @route   GET /api/auth/team-leaders-school
+// @access  Private/OM
+router.get('/team-leaders-school', protect, omOnly, async (req, res) => {
+    const tls = await User.find({ role: 'TL-SCHOOL', isVerified: true }).select('_id email');
+    res.json(tls);
+});
+
+// @desc    Bulk assign POCs to a Team Leader
+// @route   PUT /api/auth/users/bulk-assign-tl
+// @access  Private/OM
+router.put('/users/bulk-assign-tl', protect, omOnly, async (req, res) => {
+    const { userIds, teamLeaderId } = req.body;
+
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+        return res.status(400).json({ message: 'userIds array is required' });
+    }
+
+    await User.updateMany(
+        { _id: { $in: userIds } },
+        { $set: { teamLeader: teamLeaderId || null } }
+    );
+
+    const updated = await User.find({ _id: { $in: userIds } }).select('-password').populate('teamLeader', 'email');
+    res.json({ message: `${updated.length} user(s) updated`, users: updated });
 });
 
 // @desc    Verify POC using Code

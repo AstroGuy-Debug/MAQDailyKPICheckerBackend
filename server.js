@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import authRoutes from './src/routes/authRoutes.js';
 import reportRoutes from './src/routes/reportRoutes.js';
 import schoolReportRoutes from './src/routes/schoolReportRoutes.js';
+import tlRoutes from './src/routes/tlRoutes.js';
 import User from './src/models/User.js';
 import bcrypt from 'bcryptjs';
 
@@ -24,6 +25,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use('/api/auth', authRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/school-reports', schoolReportRoutes);
+app.use('/api/tl', tlRoutes);
 
 app.get('/', (req, res) => {
     res.send('API is running...');

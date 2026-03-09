@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 
 const reportSchema = new mongoose.Schema({
     account: { type: String, required: true },
+    applicantName: { type: String },
     endorsementDate: { type: Date },
     packageType: { type: String },
     isCompleted: { type: Boolean, default: false },

@@ -12,8 +12,13 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['OM', 'POC', 'POC-SCHOOL'],
+    enum: ['OM', 'POC', 'POC-SCHOOL', 'TL', 'TL-SCHOOL'],
     default: 'POC',
+  },
+  teamLeader: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null,
   },
   isVerified: {
     type: Boolean,
