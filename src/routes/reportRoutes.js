@@ -1,5 +1,5 @@
 import express from 'express';
-import { protect } from '../middleware/authMiddleware.js';
+import { protect, omOnly } from '../middleware/authMiddleware.js';
 import Report from '../models/Report.js';
 import KpiLog from '../models/KpiLog.js';
 import Review from '../models/Review.js';
@@ -565,6 +565,96 @@ router.get('/my-reviews', protect, async (req, res) => {
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Error fetching reviews', error: error.message });
+    }
+});
+
+// @desc    Get distinct account names (for OM delete panel)
+// @route   GET /api/reports/accounts
+// @access  Private (OM)
+router.get('/accounts', protect, omOnly, async (req, res) => {
+    try {
+        const accounts = await Report.distinct('account');
+        // Return with count per account
+        const accountCounts = [];
+        for (const account of accounts) {
+            const count = await Report.countDocuments({ account });
+            accountCounts.push({ account, count });
+        }
+        accountCounts.sort((a, b) => a.account.localeCompare(b.account));
+        res.json(accountCounts);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching accounts', error: error.message });
+    }
+});
+
+// @desc    Delete reports by account name
+// @route   DELETE /api/reports/by-account
+// @access  Private (OM)
+router.delete('/by-account', protect, omOnly, async (req, res) => {
+    try {
+        const { account } = req.body;
+        if (!account) {
+            return res.status(400).json({ message: 'Account name is required' });
+        }
+
+        // Find all report IDs for this account
+        const reports = await Report.find({ account }).select('_id');
+        const reportIds = reports.map(r => r._id);
+
+        // Delete related KPI logs and reviews
+        await KpiLog.deleteMany({ reportId: { $in: reportIds } });
+        await Review.deleteMany({ reportId: { $in: reportIds } });
+
+        // Delete the reports
+        const result = await Report.deleteMany({ account });
+
+        res.json({
+            message: `Deleted ${result.deletedCount} report(s) for account "${account}"`,
+            deletedCount: result.deletedCount
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Error deleting reports', error: error.message });
+    }
+});
+
+// @desc    Delete reports by date range (batch delete)
+// @route   DELETE /api/reports/by-date
+// @access  Private (OM)
+router.delete('/by-date', protect, omOnly, async (req, res) => {
+    try {
+        const { startDate, endDate, account } = req.body;
+        if (!startDate || !endDate) {
+            return res.status(400).json({ message: 'startDate and endDate are required' });
+        }
+
+        const start = new Date(startDate);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+
+        const query = { endorsementDate: { $gte: start, $lte: end } };
+        if (account) {
+            query.account = account;
+        }
+
+        // Find all report IDs matching query
+        const reports = await Report.find(query).select('_id');
+        const reportIds = reports.map(r => r._id);
+
+        // Delete related KPI logs and reviews
+        await KpiLog.deleteMany({ reportId: { $in: reportIds } });
+        await Review.deleteMany({ reportId: { $in: reportIds } });
+
+        // Delete the reports
+        const result = await Report.deleteMany(query);
+
+        const label = account ? `account "${account}" from ${startDate} to ${endDate}` : `${startDate} to ${endDate}`;
+        res.json({
+            message: `Deleted ${result.deletedCount} report(s) for ${label}`,
+            deletedCount: result.deletedCount
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Error deleting reports', error: error.message });
     }
 });
 
